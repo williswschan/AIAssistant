@@ -2,7 +2,7 @@
 Tech Cafe AI Helpdesk — Flask backend.
 
 - Mints short-lived Azure Realtime credentials for browser WebRTC voice.
-- Runs GPT-5.5 diagnostics when the Realtime agent calls consult_helpdesk_expert.
+- Runs gpt-6-astra diagnostics when the Realtime agent calls consult_helpdesk_expert.
 Permanent AZURE_OPENAI_API_KEY never leaves the server.
 """
 
@@ -41,7 +41,7 @@ AZURE_OPENAI_REALTIME_DEPLOYMENT = os.getenv(
     "AZURE_OPENAI_REALTIME_DEPLOYMENT", "gpt-realtime-2.1"
 ).strip()
 AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv(
-    "AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-5.5"
+    "AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-6-astra"
 ).strip()
 AZURE_OPENAI_VOICE = os.getenv("AZURE_OPENAI_VOICE", "cedar").strip()
 AZURE_REASONING_EFFORT = os.getenv("AZURE_REASONING_EFFORT", "high").strip()
@@ -142,7 +142,7 @@ DIAGNOSE_TOOL = {
     "type": "function",
     "name": "consult_helpdesk_expert",
     "description": (
-        "Consult the senior IT Help Desk diagnostic model (GPT-5.5) for triage "
+        "Consult the senior IT Help Desk diagnostic model (gpt-6-astra) for triage "
         "and next-step guidance. Use after you have the caller's name and a clear "
         "issue description. Use for non-trivial troubleshooting, Path A/B/C routing, "
         "Outlook/Teams/VPN/password/generic sign-in problems, and before recommending "
@@ -458,7 +458,7 @@ def get_prompt_cache_key(helpdesk_rules: str) -> str:
 
 
 def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
-    """Call Azure chat deployment (gpt-5.5) for Help Desk diagnostics."""
+    """Call Azure chat deployment (gpt-6-astra) for Help Desk diagnostics."""
     root = get_azure_resource_root()
     url = f"{root}/openai/v1/chat/completions"
     helpdesk_rules = load_helpdesk_prompt()
@@ -574,7 +574,7 @@ def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
 
 
 def _model_payload_from_request(payload: dict) -> tuple[dict, str]:
-    """Build GPT-5.5 payload + optional transcript id from a JSON body."""
+    """Build gpt-6-astra payload + optional transcript id from a JSON body."""
     model_payload = {
         "caller_name": _as_text(payload.get("caller_name")),
         "issue_summary": _as_text(payload.get("issue_summary")),
@@ -588,7 +588,7 @@ def _model_payload_from_request(payload: dict) -> tuple[dict, str]:
 
 
 def _run_expert_job(job_id: str, model_payload: dict, transcript_id: str) -> None:
-    """Background GPT-5.5 consult so the phone only needs short HTTP requests."""
+    """Background gpt-6-astra consult so the phone only needs short HTTP requests."""
     try:
         if TRANSCRIPT_LOGGING and transcript_id:
             try:
@@ -644,7 +644,7 @@ def warm_diagnose_prompt_cache() -> None:
         logger.warning("Skipping prompt cache warm-up (Azure not configured)")
         return
     try:
-        logger.info("Warming GPT-5.5 diagnose prompt cache...")
+        logger.info("Warming gpt-6-astra diagnose prompt cache...")
         result = call_gpt55_diagnose(
             {
                 "caller_name": "warmup",
@@ -1264,7 +1264,7 @@ def ensure_dev_ssl_certs() -> tuple[str, str]:
 
 if __name__ == "__main__":
     if not AZURE_OPENAI_API_KEY:
-        logger.error("AZURE_OPENAI_API_KEY is not configured. Copy .env.example to .env.")
+        logger.error("AZURE_OPENAI_API_KEY is not configured. Create a .env with AZURE_OPENAI_API_KEY.")
     host = os.getenv("FLASK_HOST", "0.0.0.0")
     port = int(os.getenv("FLASK_PORT", "5000"))
     use_ssl = os.getenv("FLASK_SSL", "true").strip().lower() in ("1", "true", "yes", "on")

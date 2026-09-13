@@ -40,7 +40,6 @@ Browser
 ```text
 app.py
 requirements.txt
-.env.example
 .gitignore
 README.md
 techcafe_prompt.txt
@@ -69,17 +68,17 @@ python -m venv .venv
 
 pip install -r requirements.txt
 
-Copy-Item .env.example .env
+# Create .env with your Azure key and endpoints (see variables below)
 ```
 
 Edit `.env`:
 
 ```text
 AZURE_OPENAI_API_KEY=...
-AZURE_OPENAI_ENDPOINT=https://fr-techcafe.openai.azure.com/openai/v1
+AZURE_OPENAI_ENDPOINT=https://foundry-techcafeaiassistant.openai.azure.com/openai/v1
 AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2.1
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.5
-AZURE_OPENAI_VOICE=cedar
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-6-astra
+AZURE_OPENAI_VOICE=marin
 AZURE_REASONING_EFFORT=high
 AZURE_INTERRUPT_RESPONSE=true
 AZURE_VAD_THRESHOLD=0.5
@@ -126,7 +125,7 @@ Allow microphone permission when prompted.
 
 | Symptom | What to check |
 |---|---|
-| `AZURE_OPENAI_API_KEY is not configured` | Create `.env` from `.env.example` |
+| `AZURE_OPENAI_API_KEY is not configured` | Create a `.env` file with `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` |
 | Unable to connect / 401 | Key invalid or wrong resource |
 | Realtime operation not supported | Deploy a Realtime model; set `AZURE_OPENAI_REALTIME_DEPLOYMENT` to the **deployment name** |
 | Microphone message | Allow mic for `http://127.0.0.1:5000` in browser site settings |
@@ -162,7 +161,7 @@ Later tools could book real Tech Cafe slots or create real incidents. Not implem
 ## Dual-model behavior
 
 - **Voice / conversation:** Azure Realtime `gpt-realtime-2.1`
-- **Deep diagnostics:** Azure chat `gpt-5.5` via tool `consult_helpdesk_expert`
+- **Deep diagnostics:** Azure chat `gpt-6-astra` via tool `consult_helpdesk_expert`
 - Flow: Realtime may call the tool → browser POSTs `/api/diagnose` → GPT-5.5 result returned to Realtime → Realtime speaks the next step
 
 Status text **Consulting GPT-5.5...** appears when the expert model is used.

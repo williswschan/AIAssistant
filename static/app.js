@@ -893,7 +893,7 @@
                 type: "function",
                 name: "consult_helpdesk_expert",
                 description:
-                  "Consult GPT-5.5 for IT Help Desk triage after gathering caller name and issue details.",
+                  "Consult gpt-6-astra for IT Help Desk triage after gathering caller name and issue details.",
                 parameters: {
                   type: "object",
                   properties: {
@@ -2059,8 +2059,8 @@
       return;
     }
 
-    setStatus("Consulting GPT-5.5...");
-    pushDebug("tool:gpt-5.5");
+    setStatus("Consulting gpt-6-astra...");
+    pushDebug("tool:gpt-6-astra");
     console.log("[INFO] consult_helpdesk_expert", rawArgs);
 
     let args;
@@ -2099,7 +2099,7 @@
       } else {
         const data = consultResult.data;
         output = data.result || data;
-        console.log("[INFO] GPT-5.5 diagnose result", output);
+        console.log("[INFO] gpt-6-astra diagnose result", output);
         if (typeof data.cached_tokens !== "undefined") {
           console.log("[INFO] prompt cached_tokens=", data.cached_tokens);
           pushDebug("cache:" + data.cached_tokens);
