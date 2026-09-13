@@ -1,0 +1,13 @@
+.env
+**/.env
+MISC/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+.DS_Store
+certs/
+logs/transcripts/*.txt
+logs/client-events.log

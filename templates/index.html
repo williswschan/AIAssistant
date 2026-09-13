@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tech Cafe AI Helpdesk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23c41e3a'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-size='28' font-family='Arial' fill='white'%3ETC%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="shell">
+    <header class="portal-header">
+      <p class="brand">Tech Cafe</p>
+      <h1 class="title">AI IT Helpdesk</h1>
+      <p class="tagline">Voice support for employees — talk like a real Help Desk call</p>
+    </header>
+
+    <main class="portal-body">
+      <div class="call-panel">
+        <button id="startBtn" class="call-btn" type="button">
+          Tech Cafe AI Helpdesk
+        </button>
+
+        <button id="endBtn" class="end-btn hidden" type="button">
+          End Call
+        </button>
+
+        <p id="status" class="status" aria-live="polite">Ready</p>
+        <p id="timer" class="timer hidden">00:00</p>
+
+        <div id="meterWrap" class="meter-wrap hidden" aria-hidden="true">
+          <div id="meterBar" class="meter-bar"></div>
+        </div>
+        <p id="debug" class="debug hidden"></p>
+      </div>
+    </main>
+
+    <footer class="portal-footer">
+      <div class="footer-scroll">
+        <span>Connecting Market East &amp; West | AI-Powered Tech Cafe Helpdesk</span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js', v=app_js_version) }}"></script>
+</body>
+</html>
