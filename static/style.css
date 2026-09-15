@@ -1,27 +1,15 @@
 :root {
-  --portal-red: #dc2626;
-  --portal-red-deep: #b91c1c;
+  --portal-red: #e11d2e;
+  --portal-red-deep: #c01828;
   --portal-red-soft: #f87171;
   --ink: #1f2937;
   --muted: #6b7280;
-  --line: #e5e7eb;
   --panel: #ffffff;
-  --success: #166534;
-  --success-bg: #f0fdf4;
-  --danger: #dc2626;
-  --danger-hover: #b91c1c;
   --font: "Manrope", "Segoe UI", sans-serif;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  margin: 0;
-  min-height: 100%;
-}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
 
 body {
   min-height: 100vh;
@@ -64,12 +52,7 @@ body {
   pointer-events: none;
 }
 
-.brand,
-.title,
-.tagline {
-  position: relative;
-  z-index: 1;
-}
+.brand, .title, .tagline { position: relative; z-index: 1; }
 
 .brand {
   margin: 0;
@@ -101,12 +84,11 @@ body {
   align-items: center;
   justify-content: center;
   padding: 2rem 1.5rem;
-  background:
-    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
 }
 
 .call-panel {
-  width: min(100%, 22rem);
+  width: min(100%, 24rem);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -123,21 +105,69 @@ body {
 }
 
 .call-btn {
-  width: 100%;
-  max-width: 18rem;
-  padding: 0.85rem 1.25rem;
-  border-radius: 999px;
-  background: var(--portal-red);
+  position: relative;
+  overflow: hidden;
+  width: auto;
+  min-width: 12.5rem;
+  max-width: 14.5rem;
+  margin: 0 auto;
+  padding: 0.95rem 1.6rem;
+  text-align: center;
+  border-radius: 1.15rem;
+  background: linear-gradient(180deg, #f02939 0%, #e11d2e 45%, #c01828 100%);
   color: #fff;
-  font-size: 1rem;
-  font-weight: 700;
-  box-shadow: 0 8px 20px rgba(220, 38, 38, 0.28);
+  font-size: clamp(0.95rem, 2.6vw, 1.08rem);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 10px 24px rgba(225, 29, 46, 0.32),
+    inset 0 2px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.12);
   animation: softPulse 2.6s ease-in-out infinite;
 }
 
+.call-btn-text {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+
+/* Rainbow NEW ribbon painted on the button (does not block clicks) */
+.call-btn::after {
+  content: "NEW";
+  position: absolute;
+  top: 12px;
+  right: -28px;
+  z-index: 2;
+  width: 100px;
+  padding: 5px 0;
+  text-align: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transform: rotate(45deg);
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    #ff2d95 0%,
+    #ff6b2d 18%,
+    #ffd400 36%,
+    #22c55e 54%,
+    #06b6d4 72%,
+    #3b82f6 88%,
+    #8b5cf6 100%
+  );
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+}
+
 .call-btn:hover:not(:disabled) {
-  background: var(--portal-red-deep);
-  transform: translateY(-2px);
+  background: linear-gradient(180deg, #f53b4a 0%, #e11d2e 45%, #a91422 100%);
+  transform: translateY(-1px);
 }
 
 .call-btn:disabled {
@@ -147,18 +177,28 @@ body {
 }
 
 .end-btn {
-  width: 100%;
-  max-width: 12rem;
-  padding: 0.75rem 1.2rem;
-  border-radius: 999px;
-  background: #991b1b;
+  position: relative;
+  overflow: hidden;
+  width: auto;
+  min-width: 12.5rem;
+  max-width: 14.5rem;
+  margin: 0 auto;
+  padding: 0.95rem 1.6rem;
+  text-align: center;
+  border-radius: 1.15rem;
+  background: linear-gradient(180deg, #f02939 0%, #e11d2e 45%, #c01828 100%);
   color: #fff;
-  font-size: 0.95rem;
-  font-weight: 700;
+  font-size: clamp(0.95rem, 2.6vw, 1.08rem);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 10px 24px rgba(225, 29, 46, 0.32),
+    inset 0 2px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.12);
 }
 
 .end-btn:hover {
-  background: #7f1d1d;
+  background: linear-gradient(180deg, #f53b4a 0%, #e11d2e 45%, #a91422 100%);
   transform: translateY(-1px);
 }
 
@@ -202,6 +242,7 @@ body {
   font-size: 0.72rem;
   line-height: 1.35;
   word-break: break-word;
+  min-height: 1em;
 }
 
 .portal-footer {
@@ -221,63 +262,32 @@ body {
   font-weight: 600;
 }
 
-.hidden {
-  display: none !important;
-}
+.hidden { display: none !important; }
 
 @keyframes softPulse {
-  0%,
-  100% {
-    box-shadow: 0 8px 20px rgba(220, 38, 38, 0.28);
-  }
-  50% {
-    box-shadow: 0 8px 28px rgba(220, 38, 38, 0.42);
-  }
+  0%, 100% { box-shadow: 0 10px 24px rgba(225, 29, 46, 0.32), inset 0 2px 0 rgba(255,255,255,0.22); }
+  50% { box-shadow: 0 12px 30px rgba(225, 29, 46, 0.45), inset 0 2px 0 rgba(255,255,255,0.22); }
 }
 
 @keyframes footerMarquee {
-  0% {
-    transform: translateX(0);
-  }
-  100% {
-    transform: translateX(-100%);
-  }
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
 }
 
 @media (max-width: 640px) {
-  body {
-    padding: 0.75rem;
-  }
-
-  .shell {
-    min-height: calc(100vh - 1.5rem);
-    border-radius: 1rem;
-  }
-
-  .portal-header {
-    padding: 1.2rem 1rem 1.1rem;
-  }
-
-  .portal-body {
-    padding: 1.5rem 1rem;
-  }
-
+  body { padding: 0.75rem; }
+  .shell { min-height: calc(100vh - 1.5rem); border-radius: 1rem; }
+  .portal-header { padding: 1.2rem 1rem 1.1rem; }
+  .portal-body { padding: 1.5rem 1rem; }
   .call-btn {
-    max-width: 100%;
+    max-width: 13.5rem;
+    font-size: 0.92rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .call-btn,
-  .footer-scroll {
-    animation: none;
-  }
-
-  .call-btn,
-  .end-btn {
-    transition: none;
-  }
-
+  .call-btn, .footer-scroll { animation: none; }
+  .call-btn, .end-btn { transition: none; }
   .footer-scroll {
     padding-left: 0;
     display: block;

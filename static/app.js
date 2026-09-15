@@ -96,6 +96,10 @@
   let remoteStreamAudioSource = null;
   let attachedRemoteStream = null;
   let remotePlaybackMode = "element";
+  // Resolved after mic open so ring + AI voice share the OS-selected output
+  // (not just Chrome's multimedia "default", which can stay on built-in speakers
+  // while Bluetooth HFP is the communications / mic-matched device).
+  let preferredOutputSinkId = "default";
   // North American PSTN ringback (what you hear while a call is ringing):
   // 440 Hz + 480 Hz for 2s, then 4s silence. ITU-T / NANP standard.
   const CONNECTING_RING_ON_SEC = 2.0;
@@ -148,9 +152,8 @@
       setStatus("Microphone API unavailable in this browser.");
       return;
     }
-    // Chrome/Edge: unlock AudioContext on click. Start ring AFTER mic opens so
-    // Bluetooth headsets (e.g. Shokz) finish profile switch and setSinkId can
-    // route playback to the same device the user is listening on.
+    // Chrome/Edge: unlock AudioContext on click. After mic opens we rebind
+    // playback to OS default sink so ringtone and AI voice share one output.
     unlockOutputAudioFromUserGesture();
     enqueueMicOp(() => startCall()).catch((error) => {
       console.error("[ERROR] startCall failed", error);
@@ -602,8 +605,9 @@
     wireMicTrackEvents(micTrack);
 
     // After mic capture, Windows Bluetooth often switches to Headset (HFP).
-    // Re-route playback to that headset or AI audio plays on speakers while
-    // the user listens on Shokz (silent to them). iPhone does not do this.
+    // Wait for that profile flip, then bind ringtone + AI playback to the same
+    // OS-selected output (mic group / communications / default).
+    await delay(450);
     await applyOutputDeviceRouting();
     startConnectingTone();
 
@@ -707,8 +711,7 @@
       rtcpMuxPolicy: "require",
     });
 
-    // Uses the system default playback device (no setSinkId).
-    // Prefer the element unlocked during the Start click (Chrome/Edge autoplay).
+    // Uses the OS-selected playback device resolved after mic open.
     if (!remoteAudio) {
       remoteAudio = document.createElement("audio");
       remoteAudio.autoplay = true;
@@ -718,6 +721,7 @@
     }
     remoteAudio.muted = false;
     remoteAudio.volume = 1.0;
+    setElementOutputSink(remoteAudio).catch(() => {});
 
     peerConnection.ontrack = async (event) => {
       console.log("[INFO] Remote track received", event.track.kind);
@@ -1760,6 +1764,7 @@
     remoteAudio.muted = false;
     remoteAudio.volume = 1.0;
     remotePlaybackMode = "element";
+    setElementOutputSink(remoteAudio).catch(() => {});
     remoteAudio.play().catch((error) => {
       console.warn(
         "[WARN] remoteAudio.play failed; falling back to AudioContext",
@@ -1815,88 +1820,198 @@
   }
 
   async function applyOutputDeviceRouting() {
+    // Resolve the OS-selected output (prefer same device group as the active
+    // mic), then bind ringtone HTMLAudio, remote AI <audio>, and AudioContext
+    // to that one sink so Bluetooth HFP does not leave ring on built-in speakers.
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        return;
-      }
-      const micTrack = localStream && localStream.getAudioTracks()[0];
-      if (!micTrack) {
-        return;
-      }
-      const settings = micTrack.getSettings ? micTrack.getSettings() : {};
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const micInfo =
-        devices.find(
-          (device) =>
-            device.kind === "audioinput" && device.deviceId === settings.deviceId
-        ) || null;
-      const micLabel = String(
-        (micInfo && micInfo.label) || settings.deviceId || ""
-      ).toLowerCase();
-      const micGroupId = micInfo && micInfo.groupId ? micInfo.groupId : null;
-      const outputs = devices.filter((device) => device.kind === "audiooutput");
-
-      let output =
-        (micGroupId &&
-          outputs.find((device) => device.groupId === micGroupId)) ||
-        null;
-
-      if (!output && micLabel) {
-        const tokens = micLabel
-          .split(/[^a-z0-9]+/i)
-          .filter((token) => token.length > 3)
-          .slice(0, 4);
-        output =
-          outputs.find((device) => {
-            const label = String(device.label || "").toLowerCase();
-            return tokens.some((token) => label.includes(token));
-          }) || null;
-      }
-
-      if (!output && /shokz|opencomm|bluetooth|headset|hands-?free/i.test(micLabel)) {
-        output =
-          outputs.find((device) =>
-            /shokz|opencomm|headset|hands-?free|bluetooth/i.test(device.label || "")
-          ) || null;
-      }
-
-      if (!output) {
-        console.log(
-          "[INFO] No matching speaker for mic; using browser default output. Mic=",
-          micInfo && micInfo.label ? micInfo.label : micLabel
-        );
-        pushDebug("sink:default");
-        return;
-      }
-
-      console.log("[INFO] Routing playback to:", output.label || output.deviceId);
-      pushDebug("sink:" + String(output.label || output.deviceId).slice(0, 40));
-
-      if (
-        outputAudioContext &&
-        typeof outputAudioContext.setSinkId === "function"
-      ) {
-        await outputAudioContext.setSinkId(output.deviceId);
-        console.log(
-          "[INFO] AudioContext sink set; state=",
-          outputAudioContext.state
-        );
-      }
-      if (remoteAudio && typeof remoteAudio.setSinkId === "function") {
-        await remoteAudio.setSinkId(output.deviceId);
-        console.log("[INFO] remoteAudio sink set");
-      }
-
-      // Re-assert running after Bluetooth profile switch.
-      ensureOutputAudioContextRunning();
-      if (remoteAudio && remoteAudio.srcObject) {
-        // Keep single-path attach; only refresh sink, do not dual-route.
-        enableLocalPlayback();
-      }
+      await rebindOutputToOsDefault();
     } catch (error) {
       console.warn("[WARN] applyOutputDeviceRouting failed", error);
       pushDebug("sink:fail");
     }
+  }
+
+  async function resolvePreferredOutputSinkId() {
+    preferredOutputSinkId = "default";
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        return preferredOutputSinkId;
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter((device) => device.kind === "audiooutput");
+      if (outputs.length === 0) {
+        return preferredOutputSinkId;
+      }
+
+      const micTrack = localStream && localStream.getAudioTracks()[0];
+      const micSettings =
+        micTrack && typeof micTrack.getSettings === "function"
+          ? micTrack.getSettings()
+          : {};
+      let micGroupId = micSettings.groupId || "";
+      const micDeviceId = micSettings.deviceId || "";
+      const micLabel = String((micTrack && micTrack.label) || "").toLowerCase();
+
+      if (!micGroupId) {
+        const inputs = devices.filter((device) => device.kind === "audioinput");
+        const micInfo =
+          inputs.find((device) => device.deviceId && device.deviceId === micDeviceId) ||
+          inputs.find(
+            (device) =>
+              micLabel && String(device.label || "").toLowerCase() === micLabel
+          );
+        if (micInfo && micInfo.groupId) {
+          micGroupId = micInfo.groupId;
+        }
+      }
+
+      if (micGroupId) {
+        const groupMatch =
+          outputs.find(
+            (device) =>
+              device.groupId === micGroupId &&
+              device.deviceId &&
+              device.deviceId !== "default" &&
+              device.deviceId !== "communications"
+          ) || outputs.find((device) => device.groupId === micGroupId);
+        if (groupMatch && groupMatch.deviceId) {
+          preferredOutputSinkId = groupMatch.deviceId;
+          console.log(
+            "[INFO] Output sink matched mic group:",
+            groupMatch.label || groupMatch.deviceId
+          );
+          pushDebug("sink:group");
+          return preferredOutputSinkId;
+        }
+      }
+
+      // Windows often exposes a communications default separate from multimedia.
+      const communications = outputs.find(
+        (device) => device.deviceId === "communications"
+      );
+      if (communications) {
+        preferredOutputSinkId = "communications";
+        console.log("[INFO] Output sink: communications device");
+        pushDebug("sink:communications");
+        return preferredOutputSinkId;
+      }
+
+      if (micLabel) {
+        const labelMatch = outputs.find((device) => {
+          const outLabel = String(device.label || "").toLowerCase();
+          if (!outLabel) {
+            return false;
+          }
+          if (outLabel === micLabel) {
+            return true;
+          }
+          const micToken = micLabel.replace(/\(.*?\)/g, "").trim();
+          return (
+            micToken.length > 4 && outLabel.indexOf(micToken.slice(0, 16)) !== -1
+          );
+        });
+        if (labelMatch && labelMatch.deviceId) {
+          preferredOutputSinkId = labelMatch.deviceId;
+          console.log(
+            "[INFO] Output sink matched mic label:",
+            labelMatch.label || labelMatch.deviceId
+          );
+          pushDebug("sink:label");
+          return preferredOutputSinkId;
+        }
+      }
+
+      const defaultOut = outputs.find((device) => device.deviceId === "default");
+      if (defaultOut) {
+        preferredOutputSinkId = "default";
+        pushDebug("sink:default");
+        return preferredOutputSinkId;
+      }
+    } catch (error) {
+      console.warn("[WARN] resolvePreferredOutputSinkId failed", error);
+    }
+    return preferredOutputSinkId;
+  }
+
+  async function rebindOutputToOsDefault() {
+    // Mic open often switches Windows to Headset (HFP). Recreate AudioContext
+    // AFTER that so Web Audio is not stuck on the pre-call speaker sink.
+    killConnectingToneNodes();
+    await resolvePreferredOutputSinkId();
+    const sinkId = preferredOutputSinkId || "default";
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const previousCtx = outputAudioContext;
+    if (AudioCtx) {
+      try {
+        outputAudioContext = new AudioCtx();
+        if (outputAudioContext.state === "suspended") {
+          await outputAudioContext.resume().catch(() => {});
+        }
+        if (typeof outputAudioContext.setSinkId === "function") {
+          try {
+            await outputAudioContext.setSinkId(sinkId);
+          } catch (sinkError) {
+            console.warn(
+              "[WARN] AudioContext setSinkId failed; falling back to default",
+              sinkError
+            );
+            if (sinkId !== "default") {
+              await outputAudioContext.setSinkId("default").catch(() => {});
+            }
+          }
+        }
+      } catch (error) {
+        console.warn("[WARN] AudioContext OS-default bind failed", error);
+        if (!outputAudioContext || outputAudioContext.state === "closed") {
+          outputAudioContext = previousCtx;
+        }
+      }
+    }
+    if (
+      previousCtx &&
+      previousCtx !== outputAudioContext &&
+      previousCtx.state !== "closed"
+    ) {
+      try {
+        await previousCtx.close();
+      } catch (_error) {
+        // ignore
+      }
+    }
+
+    await setElementOutputSink(remoteAudio);
+    await setElementOutputSink(connectingToneAudio);
+
+    console.log("[INFO] Playback bound to OS output sink:", sinkId);
+    pushDebug("sink:bound");
+    ensureOutputAudioContextRunning();
+    if (remoteAudio && remoteAudio.srcObject) {
+      enableLocalPlayback();
+    }
+  }
+
+  async function setElementOutputSink(audioEl) {
+    if (!audioEl || typeof audioEl.setSinkId !== "function") {
+      return;
+    }
+    const sinkId = preferredOutputSinkId || "default";
+    try {
+      await audioEl.setSinkId(sinkId);
+    } catch (error) {
+      console.warn("[WARN] setSinkId failed for", sinkId, error);
+      if (sinkId !== "default") {
+        try {
+          await audioEl.setSinkId("default");
+        } catch (fallbackError) {
+          console.warn("[WARN] setSinkId(default) failed", fallbackError);
+        }
+      }
+    }
+  }
+
+  // Back-compat alias used by older call sites / mental model.
+  async function setElementSinkToOsDefault(audioEl) {
+    return setElementOutputSink(audioEl);
   }
 
   function stopOutputAudioContext() {
@@ -3515,6 +3630,7 @@
     pendingHangup = false;
     attachedRemoteStream = null;
     remotePlaybackMode = "element";
+    preferredOutputSinkId = "default";
     stopConnectingTone();
     stopOutputAudioContext();
     hangupAudioHeard = false;
@@ -3702,8 +3818,16 @@
     setStatus("Connecting — ringing...");
     pushDebug("ring:start");
     try {
-      // Prefer AudioContext ring (same ctx unlocked on click) — reliable on Chrome/Edge.
-      if (outputAudioContext && outputAudioContext.state !== "closed") {
+      // Prefer HTMLAudio on the same OS-selected sink as remote AI audio.
+      // Matching the active mic's output group fixes BT HFP (ring was on speakers).
+      connectingToneUrl = buildConnectingRingWavUrl();
+      connectingToneAudio = new Audio(connectingToneUrl);
+      connectingToneAudio.preload = "auto";
+      connectingToneAudio.volume = 0.8;
+      const beginRing = () => {
+        if (!connectingToneActive) {
+          return;
+        }
         playConnectingRingBurst();
         connectingToneTimerId = window.setInterval(() => {
           if (!connectingToneActive) {
@@ -3711,20 +3835,14 @@
           }
           playConnectingRingBurst();
         }, CONNECTING_RING_CYCLE_MS);
-        return;
-      }
-      // Fallback: HTMLAudio WAV
-      connectingToneUrl = buildConnectingRingWavUrl();
-      connectingToneAudio = new Audio(connectingToneUrl);
-      connectingToneAudio.preload = "auto";
-      connectingToneAudio.volume = 0.8;
-      playConnectingRingBurst();
-      connectingToneTimerId = window.setInterval(() => {
-        if (!connectingToneActive) {
-          return;
-        }
-        playConnectingRingBurst();
-      }, CONNECTING_RING_CYCLE_MS);
+      };
+      const bindAndRing = async () => {
+        await resolvePreferredOutputSinkId();
+        await setElementOutputSink(connectingToneAudio);
+      };
+      bindAndRing()
+        .catch(() => {})
+        .finally(beginRing);
     } catch (error) {
       console.warn("[WARN] Connecting ring setup failed", error);
     }
@@ -3792,20 +3910,27 @@
       return;
     }
     try {
+      if (connectingToneAudio) {
+        connectingToneAudio.pause();
+        connectingToneAudio.currentTime = 0;
+        connectingToneAudio.volume = 0.8;
+        connectingToneAudio.play().catch((error) => {
+          console.warn("[WARN] Connecting ring play failed", error);
+          // Fallback to AudioContext if HTMLAudio is blocked.
+          if (outputAudioContext && outputAudioContext.state !== "closed") {
+            ensureOutputAudioContextRunning();
+            playConnectingRingback(
+              outputAudioContext,
+              outputAudioContext.currentTime
+            );
+          }
+        });
+        return;
+      }
       if (outputAudioContext && outputAudioContext.state !== "closed") {
         ensureOutputAudioContextRunning();
         playConnectingRingback(outputAudioContext, outputAudioContext.currentTime);
-        return;
       }
-      if (!connectingToneAudio) {
-        return;
-      }
-      connectingToneAudio.pause();
-      connectingToneAudio.currentTime = 0;
-      connectingToneAudio.volume = 0.8;
-      connectingToneAudio.play().catch((error) => {
-        console.warn("[WARN] Connecting ring play failed", error);
-      });
     } catch (error) {
       console.warn("[WARN] Connecting ring failed", error);
     }

@@ -1205,8 +1205,29 @@ def _local_ipv4_addresses() -> list[str]:
 
 
 def ensure_dev_ssl_certs() -> tuple[str, str]:
-    """Create a local self-signed cert (with LAN IP SANs) for iPhone Safari mic access."""
+    """Resolve TLS cert/key paths for HTTPS (provided files or local self-signed)."""
     cert_dir = BASE_DIR / "certs"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+
+    env_cert = os.getenv("FLASK_SSL_CERT", "").strip()
+    env_key = os.getenv("FLASK_SSL_KEY", "").strip()
+    if env_cert and env_key:
+        cert_path = Path(env_cert)
+        key_path = Path(env_key)
+        if cert_path.is_file() and key_path.is_file():
+            logger.info("Using TLS cert from env: %s", cert_path)
+            return str(cert_path), str(key_path)
+        raise FileNotFoundError(
+            f"FLASK_SSL_CERT/KEY set but missing: cert={cert_path} key={key_path}"
+        )
+
+    # Prefer Let's Encrypt-style names when present (e.g. cloud VM).
+    provided_cert = cert_dir / "fullchain.pem"
+    provided_key = cert_dir / "privkey.pem"
+    if provided_cert.is_file() and provided_key.is_file():
+        logger.info("Using TLS cert from %s", provided_cert)
+        return str(provided_cert), str(provided_key)
+
     cert_file = cert_dir / "dev-cert.pem"
     key_file = cert_dir / "dev-key.pem"
     if cert_file.exists() and key_file.exists():
@@ -1222,7 +1243,6 @@ def ensure_dev_ssl_certs() -> tuple[str, str]:
             "HTTPS requires the cryptography package. Run: pip install cryptography"
         ) from exc
 
-    cert_dir.mkdir(parents=True, exist_ok=True)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name(
         [x509.NameAttribute(NameOID.COMMON_NAME, "Tech Cafe AI Helpdesk Dev")]
@@ -1236,6 +1256,15 @@ def ensure_dev_ssl_certs() -> tuple[str, str]:
             alt_names.append(x509.IPAddress(ipaddress.ip_address(ip_text)))
         except ValueError:
             continue
+    # Optional public DNS / IPs for cloud VMs (comma-separated).
+    for host in os.getenv("FLASK_SSL_EXTRA_HOSTS", "").split(","):
+        host = host.strip()
+        if not host:
+            continue
+        try:
+            alt_names.append(x509.IPAddress(ipaddress.ip_address(host)))
+        except ValueError:
+            alt_names.append(x509.DNSName(host))
 
     now = datetime.now(timezone.utc)
     cert = (
@@ -1288,12 +1317,20 @@ if __name__ == "__main__":
             port,
         )
 
-    # Flask debug reloader runs this file twice; warm only in the serving child.
-    if PROMPT_CACHE_WARMUP and os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    # Flask debug reloader runs this file twice; warm only once in the serving process.
+    debug = os.getenv("FLASK_DEBUG", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if PROMPT_CACHE_WARMUP and (
+        (not debug) or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    ):
         threading.Thread(
             target=warm_diagnose_prompt_cache,
             name="prompt-cache-warmup",
             daemon=True,
         ).start()
 
-    app.run(host=host, port=port, debug=True, threaded=True, ssl_context=ssl_context)
+    app.run(host=host, port=port, debug=debug, threaded=True, ssl_context=ssl_context)
