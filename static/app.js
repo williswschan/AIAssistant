@@ -6,6 +6,14 @@
   const meterWrap = document.getElementById("meterWrap");
   const meterBar = document.getElementById("meterBar");
   const debugEl = document.getElementById("debug");
+  const micSelect = document.getElementById("micSelect");
+  const speakerSelect = document.getElementById("speakerSelect");
+  const devicePickers = document.getElementById("devicePickers");
+  const MIC_STORAGE_KEY = "tc_mic_device";
+  const SPEAKER_STORAGE_KEY = "tc_speaker_device";
+  const supportsSpeakerSelect =
+    typeof HTMLMediaElement !== "undefined" &&
+    typeof HTMLMediaElement.prototype.setSinkId === "function";
 
   let peerConnection = null;
   let dataChannel = null;
@@ -123,6 +131,44 @@
   const handledCallIds = new Set();
 
   setStatus("Ready — tap the button to start (uses mic + speakers)");
+
+  if (!supportsSpeakerSelect && speakerSelect) {
+    const speakerField = speakerSelect.closest(".device-field");
+    if (speakerField) {
+      speakerField.classList.add("hidden");
+    }
+  }
+
+  refreshDeviceLists().catch((error) => {
+    console.warn("[WARN] Initial device list failed", error);
+  });
+
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+      refreshDeviceLists().catch(() => {});
+    });
+  }
+
+  if (micSelect) {
+    micSelect.addEventListener("change", () => {
+      persistDeviceChoice(MIC_STORAGE_KEY, micSelect.value || "default");
+      console.log("[INFO] Mic selection:", micSelect.value || "default");
+    });
+    micSelect.addEventListener("focus", () => {
+      ensureDeviceLabels().catch(() => {});
+    });
+  }
+  if (speakerSelect) {
+    speakerSelect.addEventListener("change", () => {
+      persistDeviceChoice(SPEAKER_STORAGE_KEY, speakerSelect.value || "default");
+      console.log("[INFO] Speaker selection:", speakerSelect.value || "default");
+      // Preview sink on idle remote/unlock element when possible.
+      setElementOutputSink(remoteAudio).catch(() => {});
+    });
+    speakerSelect.addEventListener("focus", () => {
+      ensureDeviceLabels().catch(() => {});
+    });
+  }
 
   if (!window.isSecureContext) {
     setStatus(
@@ -404,6 +450,128 @@
     });
   }
 
+  function persistDeviceChoice(key, value) {
+    try {
+      window.localStorage.setItem(key, value || "default");
+    } catch (_error) {
+      // ignore
+    }
+  }
+
+  function readDeviceChoice(key) {
+    try {
+      return window.localStorage.getItem(key) || "default";
+    } catch (_error) {
+      return "default";
+    }
+  }
+
+  function setDevicePickersEnabled(enabled) {
+    if (micSelect) {
+      micSelect.disabled = !enabled;
+    }
+    if (speakerSelect) {
+      speakerSelect.disabled = !enabled;
+    }
+  }
+
+  function fillSelectOptions(selectEl, devices, selectedId) {
+    if (!selectEl) {
+      return;
+    }
+    const previous = selectedId || selectEl.value || "default";
+    selectEl.innerHTML = "";
+    const defaultOpt = document.createElement("option");
+    defaultOpt.value = "default";
+    defaultOpt.textContent = "System default";
+    selectEl.appendChild(defaultOpt);
+    devices.forEach((device, index) => {
+      if (!device.deviceId || device.deviceId === "default") {
+        return;
+      }
+      // Skip Windows communications alias; "System default" covers OS choice.
+      if (device.deviceId === "communications") {
+        return;
+      }
+      const opt = document.createElement("option");
+      opt.value = device.deviceId;
+      opt.textContent =
+        device.label ||
+        (device.kind === "audioinput"
+          ? "Microphone " + (index + 1)
+          : "Speaker " + (index + 1));
+      selectEl.appendChild(opt);
+    });
+    const hasPrevious = Array.from(selectEl.options).some(
+      (opt) => opt.value === previous
+    );
+    selectEl.value = hasPrevious ? previous : "default";
+  }
+
+  async function refreshDeviceLists() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      return;
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((device) => device.kind === "audioinput");
+    const outputs = devices.filter((device) => device.kind === "audiooutput");
+    fillSelectOptions(micSelect, inputs, readDeviceChoice(MIC_STORAGE_KEY));
+    if (supportsSpeakerSelect) {
+      fillSelectOptions(
+        speakerSelect,
+        outputs,
+        readDeviceChoice(SPEAKER_STORAGE_KEY)
+      );
+    }
+  }
+
+  async function ensureDeviceLabels() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return;
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const needsPermission = devices.some(
+      (device) =>
+        (device.kind === "audioinput" || device.kind === "audiooutput") &&
+        !device.label
+    );
+    if (!needsPermission) {
+      await refreshDeviceLists();
+      return;
+    }
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (error) {
+      console.warn("[WARN] Device label permission failed", error);
+      return;
+    } finally {
+      if (stream) {
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch (_error) {
+            // ignore
+          }
+        });
+      }
+    }
+    await refreshDeviceLists();
+  }
+
+  function getSelectedMicDeviceId() {
+    const value = micSelect ? micSelect.value : "default";
+    return value && value !== "default" ? value : null;
+  }
+
+  function getSelectedSpeakerDeviceId() {
+    if (!supportsSpeakerSelect || !speakerSelect) {
+      return null;
+    }
+    const value = speakerSelect.value;
+    return value && value !== "default" ? value : "default";
+  }
+
   function buildDefaultAudioConstraints() {
     const audio = {
       echoCancellation: true,
@@ -428,6 +596,10 @@
     // in ways that leave playback silent while Safari still works.
     if (!/iphone|ipad|ipod|android/i.test(navigator.userAgent || "")) {
       delete audio.voiceIsolation;
+    }
+    const micDeviceId = getSelectedMicDeviceId();
+    if (micDeviceId) {
+      audio.deviceId = { exact: micDeviceId };
     }
     return { audio };
   }
@@ -502,7 +674,10 @@
       throw new Error("Microphone open cancelled");
     }
 
-    console.log("[INFO] Opening system default microphone");
+    console.log(
+      "[INFO] Opening microphone:",
+      getSelectedMicDeviceId() || "system default"
+    );
     const stream = await requestUserMedia(buildDefaultAudioConstraints(), 8000);
     if (seq !== micOpSeq) {
       stream.getTracks().forEach((track) => track.stop());
@@ -520,13 +695,14 @@
     }
     track.enabled = true;
     console.log(
-      "[INFO] Default mic:",
+      "[INFO] Active mic:",
       track.label || "(system default)",
       "muted=",
       track.muted,
       "readyState=",
       track.readyState
     );
+    refreshDeviceLists().catch(() => {});
     startMicMeter(localStream);
     meterWrap.classList.remove("hidden");
     meterWrap.setAttribute("aria-hidden", "false");
@@ -594,6 +770,7 @@
     recentEvents.length = 0;
     setStatus("Connecting...");
     startBtn.disabled = true;
+    setDevicePickersEnabled(false);
 
     await openMicrophoneForCall();
 
@@ -804,6 +981,9 @@
     await ensureLiveMicOnSender("post_sdp");
 
     startBtn.classList.add("hidden");
+    if (devicePickers) {
+      devicePickers.classList.add("hidden");
+    }
     endBtn.classList.remove("hidden");
     timerEl.classList.remove("hidden");
     meterWrap.classList.remove("hidden");
@@ -1834,6 +2014,15 @@
   async function resolvePreferredOutputSinkId() {
     preferredOutputSinkId = "default";
     try {
+      // Explicit speaker dropdown wins over OS/mic-group heuristics.
+      const selectedSpeaker = getSelectedSpeakerDeviceId();
+      if (selectedSpeaker && selectedSpeaker !== "default") {
+        preferredOutputSinkId = selectedSpeaker;
+        console.log("[INFO] Output sink from user selection:", selectedSpeaker);
+        pushDebug("sink:user");
+        return preferredOutputSinkId;
+      }
+
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
         return preferredOutputSinkId;
       }
@@ -3695,6 +3884,11 @@
 
     startBtn.classList.remove("hidden");
     startBtn.disabled = false;
+    if (devicePickers) {
+      devicePickers.classList.remove("hidden");
+    }
+    setDevicePickersEnabled(true);
+    refreshDeviceLists().catch(() => {});
     endBtn.classList.add("hidden");
     timerEl.classList.add("hidden");
     debugEl.classList.add("hidden");

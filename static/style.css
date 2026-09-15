@@ -176,6 +176,56 @@ body {
   animation: none;
 }
 
+.device-pickers {
+  width: min(100%, 18rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.15rem;
+}
+
+.device-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.28rem;
+  text-align: left;
+}
+
+.device-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.device-field select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.65rem;
+  background: #fff;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  appearance: auto;
+}
+
+.device-field select:focus {
+  outline: 2px solid rgba(225, 29, 46, 0.35);
+  outline-offset: 1px;
+  border-color: var(--portal-red-soft);
+}
+
+.device-field select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: #f3f4f6;
+}
+
 .end-btn {
   position: relative;
   overflow: hidden;

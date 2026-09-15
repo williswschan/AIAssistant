@@ -32,6 +32,21 @@
           <span class="call-btn-text">AI Assistant</span>
         </button>
 
+        <div class="device-pickers" id="devicePickers">
+          <label class="device-field" for="micSelect">
+            <span class="device-label">Microphone</span>
+            <select id="micSelect" aria-label="Microphone input device">
+              <option value="default">System default</option>
+            </select>
+          </label>
+          <label class="device-field" for="speakerSelect">
+            <span class="device-label">Speaker</span>
+            <select id="speakerSelect" aria-label="Speaker output device">
+              <option value="default">System default</option>
+            </select>
+          </label>
+        </div>
+
         <button id="endBtn" class="end-btn hidden" type="button">
           End Call
         </button>
