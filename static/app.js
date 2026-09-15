@@ -489,7 +489,7 @@
       if (!device.deviceId || device.deviceId === "default") {
         return;
       }
-      // Skip Windows communications alias; "System default" covers OS choice.
+      // Skip Windows role aliases; "System default" maps to OS current selection.
       if (device.deviceId === "communications") {
         return;
       }
@@ -572,7 +572,7 @@
     return value && value !== "default" ? value : "default";
   }
 
-  function buildDefaultAudioConstraints() {
+  function buildDefaultAudioConstraints(preferredRole) {
     const audio = {
       echoCancellation: true,
       noiseSuppression: true,
@@ -600,6 +600,10 @@
     const micDeviceId = getSelectedMicDeviceId();
     if (micDeviceId) {
       audio.deviceId = { exact: micDeviceId };
+    } else if (preferredRole === "communications") {
+      // Windows: follow Default Communications Device (often the headset
+      // currently selected for calls), not only the multimedia Default Device.
+      audio.deviceId = { ideal: "communications" };
     }
     return { audio };
   }
@@ -676,9 +680,28 @@
 
     console.log(
       "[INFO] Opening microphone:",
-      getSelectedMicDeviceId() || "system default"
+      getSelectedMicDeviceId() || "system default (OS current)"
     );
-    const stream = await requestUserMedia(buildDefaultAudioConstraints(), 8000);
+    let stream;
+    try {
+      stream = await requestUserMedia(
+        buildDefaultAudioConstraints(
+          getSelectedMicDeviceId() ? null : "communications"
+        ),
+        8000
+      );
+    } catch (firstError) {
+      // communications role unsupported or busy — fall back to OS default mic.
+      if (!getSelectedMicDeviceId()) {
+        console.warn(
+          "[WARN] Communications mic unavailable; using OS default mic",
+          firstError
+        );
+        stream = await requestUserMedia(buildDefaultAudioConstraints(null), 8000);
+      } else {
+        throw firstError;
+      }
+    }
     if (seq !== micOpSeq) {
       stream.getTracks().forEach((track) => track.stop());
       throw new Error("Microphone open cancelled");
@@ -2014,7 +2037,7 @@
   async function resolvePreferredOutputSinkId() {
     preferredOutputSinkId = "default";
     try {
-      // Explicit speaker dropdown wins over OS/mic-group heuristics.
+      // Explicit speaker dropdown wins over OS role aliases.
       const selectedSpeaker = getSelectedSpeakerDeviceId();
       if (selectedSpeaker && selectedSpeaker !== "default") {
         preferredOutputSinkId = selectedSpeaker;
@@ -2032,87 +2055,30 @@
         return preferredOutputSinkId;
       }
 
-      const micTrack = localStream && localStream.getAudioTracks()[0];
-      const micSettings =
-        micTrack && typeof micTrack.getSettings === "function"
-          ? micTrack.getSettings()
-          : {};
-      let micGroupId = micSettings.groupId || "";
-      const micDeviceId = micSettings.deviceId || "";
-      const micLabel = String((micTrack && micTrack.label) || "").toLowerCase();
-
-      if (!micGroupId) {
-        const inputs = devices.filter((device) => device.kind === "audioinput");
-        const micInfo =
-          inputs.find((device) => device.deviceId && device.deviceId === micDeviceId) ||
-          inputs.find(
-            (device) =>
-              micLabel && String(device.label || "").toLowerCase() === micLabel
-          );
-        if (micInfo && micInfo.groupId) {
-          micGroupId = micInfo.groupId;
-        }
-      }
-
-      if (micGroupId) {
-        const groupMatch =
-          outputs.find(
-            (device) =>
-              device.groupId === micGroupId &&
-              device.deviceId &&
-              device.deviceId !== "default" &&
-              device.deviceId !== "communications"
-          ) || outputs.find((device) => device.groupId === micGroupId);
-        if (groupMatch && groupMatch.deviceId) {
-          preferredOutputSinkId = groupMatch.deviceId;
-          console.log(
-            "[INFO] Output sink matched mic group:",
-            groupMatch.label || groupMatch.deviceId
-          );
-          pushDebug("sink:group");
-          return preferredOutputSinkId;
-        }
-      }
-
-      // Windows often exposes a communications default separate from multimedia.
+      // "System default" = Windows currently selected call/output device.
+      // Prefer communications (Default Communications Device — often the
+      // headset in use) over multimedia "default" (which may still be
+      // laptop speakers while the user is on another device).
       const communications = outputs.find(
         (device) => device.deviceId === "communications"
       );
       if (communications) {
         preferredOutputSinkId = "communications";
-        console.log("[INFO] Output sink: communications device");
+        console.log(
+          "[INFO] Output sink: Windows communications (current call device)",
+          communications.label || ""
+        );
         pushDebug("sink:communications");
         return preferredOutputSinkId;
-      }
-
-      if (micLabel) {
-        const labelMatch = outputs.find((device) => {
-          const outLabel = String(device.label || "").toLowerCase();
-          if (!outLabel) {
-            return false;
-          }
-          if (outLabel === micLabel) {
-            return true;
-          }
-          const micToken = micLabel.replace(/\(.*?\)/g, "").trim();
-          return (
-            micToken.length > 4 && outLabel.indexOf(micToken.slice(0, 16)) !== -1
-          );
-        });
-        if (labelMatch && labelMatch.deviceId) {
-          preferredOutputSinkId = labelMatch.deviceId;
-          console.log(
-            "[INFO] Output sink matched mic label:",
-            labelMatch.label || labelMatch.deviceId
-          );
-          pushDebug("sink:label");
-          return preferredOutputSinkId;
-        }
       }
 
       const defaultOut = outputs.find((device) => device.deviceId === "default");
       if (defaultOut) {
         preferredOutputSinkId = "default";
+        console.log(
+          "[INFO] Output sink: Windows default",
+          defaultOut.label || ""
+        );
         pushDebug("sink:default");
         return preferredOutputSinkId;
       }
