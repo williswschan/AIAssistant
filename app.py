@@ -766,10 +766,32 @@ def get_prompt_cache_key(helpdesk_rules: str) -> str:
     return f"techcafe-helpdesk-diagnose:{digest}"
 
 
+def _responses_output_text(data: dict) -> str:
+    """Extract visible text from an Azure/OpenAI Responses API payload."""
+    direct = _as_text(data.get("output_text"))
+    if direct:
+        return direct
+    chunks: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in ("message", None) and item.get("role") != "assistant":
+            continue
+        for part in item.get("content") or []:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text") or part.get("output_text") or ""
+            if text:
+                chunks.append(str(text))
+    return "\n".join(chunks).strip()
+
+
 def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
-    """Call Azure chat deployment (gpt-6-astra) for Help Desk diagnostics."""
+    """Call Azure gpt-6-astra via the Responses API for Help Desk diagnostics."""
     root = get_azure_resource_root()
-    url = f"{root}/openai/v1/chat/completions"
+    # gpt-6-astra is not a Chat Completions model on this resource
+    # (POST /openai/v1/chat/completions returns 404 "not a chat model").
+    url = f"{root}/openai/v1/responses"
     helpdesk_rules = load_helpdesk_prompt()
     system_prompt = build_expert_system_prompt(helpdesk_rules)
     cache_key = get_prompt_cache_key(helpdesk_rules)
@@ -784,7 +806,7 @@ def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
     # Stable system prefix first, variable case JSON last — required for cache hits.
     body = {
         "model": AZURE_OPENAI_CHAT_DEPLOYMENT,
-        "messages": [
+        "input": [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
@@ -796,7 +818,7 @@ def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
                 ),
             },
         ],
-        "max_completion_tokens": 16 if warmup else 900,
+        "max_output_tokens": 64 if warmup else 900,
         # gpt-5.5 and earlier: extended retention improves hit rate across calls.
         "prompt_cache_retention": PROMPT_CACHE_RETENTION,
         # Helps route related diagnose requests to the same cache shard when supported.
@@ -807,7 +829,7 @@ def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
         "Content-Type": "application/json",
     }
     logger.info(
-        "Calling chat diagnostic model=%s cache_key=%s retention=%s warmup=%s",
+        "Calling chat diagnostic model=%s via=responses cache_key=%s retention=%s warmup=%s",
         AZURE_OPENAI_CHAT_DEPLOYMENT,
         cache_key,
         PROMPT_CACHE_RETENTION,
@@ -837,20 +859,16 @@ def call_gpt55_diagnose(payload: dict, *, warmup: bool = False) -> dict:
 
     data = response.json()
     usage = data.get("usage") or {}
+    input_details = usage.get("input_tokens_details") or {}
     prompt_details = usage.get("prompt_tokens_details") or {}
-    cached_tokens = prompt_details.get("cached_tokens", 0)
+    cached_tokens = input_details.get("cached_tokens", prompt_details.get("cached_tokens", 0))
     logger.info(
         "Diagnose usage prompt_tokens=%s cached_tokens=%s completion_tokens=%s",
-        usage.get("prompt_tokens"),
+        usage.get("input_tokens", usage.get("prompt_tokens")),
         cached_tokens,
-        usage.get("completion_tokens"),
+        usage.get("output_tokens", usage.get("completion_tokens")),
     )
-    content = (
-        data.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-        .strip()
-    )
+    content = _responses_output_text(data)
     if warmup:
         return {
             "path": "remote",
@@ -976,8 +994,14 @@ def warm_diagnose_prompt_cache() -> None:
 @app.get("/")
 def index():
     app_js_path = BASE_DIR / "static" / "app.js"
+    style_css_path = BASE_DIR / "static" / "style.css"
     app_js_version = str(int(app_js_path.stat().st_mtime)) if app_js_path.exists() else "1"
-    return render_template("index.html", app_js_version=app_js_version)
+    style_css_version = str(int(style_css_path.stat().st_mtime)) if style_css_path.exists() else "1"
+    return render_template(
+        "index.html",
+        app_js_version=app_js_version,
+        style_css_version=style_css_version,
+    )
 
 
 @app.after_request

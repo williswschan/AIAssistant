@@ -106,67 +106,33 @@ body {
 
 .call-btn {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
+  /* Match End Call footprint (~12.5–14.5rem) */
   width: auto;
   min-width: 12.5rem;
   max-width: 14.5rem;
   margin: 0 auto;
-  padding: 0.95rem 1.6rem;
+  padding: 0;
   text-align: center;
-  border-radius: 1.15rem;
-  background: linear-gradient(180deg, #f02939 0%, #e11d2e 45%, #c01828 100%);
+  border-radius: 0;
+  background: transparent !important;
   color: #fff;
-  font-size: clamp(0.95rem, 2.6vw, 1.08rem);
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  box-shadow:
-    0 10px 24px rgba(225, 29, 46, 0.32),
-    inset 0 2px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -2px 0 rgba(0, 0, 0, 0.12);
-  animation: softPulse 2.6s ease-in-out infinite;
+  /* Never use box-shadow here — it draws a rectangle around the PNG bounds */
+  box-shadow: none !important;
+  animation: softPulseArt 2.6s ease-in-out infinite;
+  line-height: 0;
 }
 
-.call-btn-text {
-  position: relative;
-  z-index: 1;
+.call-btn-art {
   display: block;
   width: 100%;
-  text-align: center;
-}
-
-/* Rainbow NEW ribbon painted on the button (does not block clicks) */
-.call-btn::after {
-  content: "NEW";
-  position: absolute;
-  top: 12px;
-  right: -28px;
-  z-index: 2;
-  width: 100px;
-  padding: 5px 0;
-  text-align: center;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  transform: rotate(45deg);
+  height: auto;
   pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    #ff2d95 0%,
-    #ff6b2d 18%,
-    #ffd400 36%,
-    #22c55e 54%,
-    #06b6d4 72%,
-    #3b82f6 88%,
-    #8b5cf6 100%
-  );
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  background: transparent;
 }
 
 .call-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #f53b4a 0%, #e11d2e 45%, #a91422 100%);
   transform: translateY(-1px);
 }
 
@@ -174,6 +140,10 @@ body {
   opacity: 0.55;
   cursor: not-allowed;
   animation: none;
+}
+
+.call-btn:disabled .call-btn-art {
+  filter: none;
 }
 
 .device-pickers {
@@ -317,6 +287,16 @@ body {
 @keyframes softPulse {
   0%, 100% { box-shadow: 0 10px 24px rgba(225, 29, 46, 0.32), inset 0 2px 0 rgba(255,255,255,0.22); }
   50% { box-shadow: 0 12px 30px rgba(225, 29, 46, 0.45), inset 0 2px 0 rgba(255,255,255,0.22); }
+}
+
+/* Pulse follows the pill alpha (drop-shadow), not the PNG's rectangular box */
+@keyframes softPulseArt {
+  0%, 100% {
+    filter: drop-shadow(0 8px 16px rgba(225, 29, 46, 0.34));
+  }
+  50% {
+    filter: drop-shadow(0 11px 22px rgba(225, 29, 46, 0.5));
+  }
 }
 
 @keyframes footerMarquee {

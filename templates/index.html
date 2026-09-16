@@ -11,7 +11,7 @@
     rel="stylesheet"
   />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23c41e3a'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-size='28' font-family='Arial' fill='white'%3ETC%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=style_css_version) }}" />
 </head>
 <body>
   <div class="shell">
@@ -29,7 +29,13 @@
           type="button"
           aria-label="Start AI Assistant call"
         >
-          <span class="call-btn-text">AI Assistant</span>
+          <img
+            class="call-btn-art"
+            src="{{ url_for('static', filename='ai-assistant-btn.png', v=style_css_version) }}"
+            alt="AI Assistant — Talk to IT. Get instant help."
+            width="1024"
+            height="243"
+          />
         </button>
 
         <div class="device-pickers" id="devicePickers">
