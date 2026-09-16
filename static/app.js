@@ -1312,23 +1312,29 @@
       console.warn("[WARN] input_audio_buffer.clear failed", error);
     }
     try {
+      // Azure replaces audio.input on session.update — re-include transcription
+      // or user ASR is wiped right when the caller starts speaking.
+      const input = {
+        turn_detection: {
+          type: turnDetectionConfig.type,
+          threshold: turnDetectionConfig.threshold,
+          prefix_padding_ms: turnDetectionConfig.prefix_padding_ms,
+          silence_duration_ms: turnDetectionConfig.silence_duration_ms,
+          create_response: turnDetectionConfig.create_response !== false,
+          interrupt_response:
+            turnDetectionConfig.interrupt_response !== false,
+        },
+      };
+      if (transcriptLoggingEnabled && transcriptionDeployment) {
+        input.transcription = { model: transcriptionDeployment };
+      }
       dataChannel.send(
         JSON.stringify({
           type: "session.update",
           session: {
             type: "realtime",
             audio: {
-              input: {
-                turn_detection: {
-                  type: turnDetectionConfig.type,
-                  threshold: turnDetectionConfig.threshold,
-                  prefix_padding_ms: turnDetectionConfig.prefix_padding_ms,
-                  silence_duration_ms: turnDetectionConfig.silence_duration_ms,
-                  create_response: turnDetectionConfig.create_response !== false,
-                  interrupt_response:
-                    turnDetectionConfig.interrupt_response !== false,
-                },
-              },
+              input,
             },
           },
         })
@@ -1467,7 +1473,21 @@
           const userText = (payload.transcript || "").trim();
           if (userText) {
             appendTranscript("USER", userText, "asr");
+          } else {
+            console.warn("[WARN] ASR completed with empty transcript", payload);
+            pushDebug("asr:empty");
           }
+        }
+        break;
+      case "conversation.item.input_audio_transcription.failed":
+      case "conversation.item.audio_transcription.failed":
+        {
+          const err =
+            (payload.error && (payload.error.message || payload.error.code)) ||
+            "transcription failed";
+          console.warn("[WARN] User ASR failed:", err, payload);
+          pushDebug("asr:failed");
+          appendTranscript("USER", "(ASR failed: " + err + ")", "asr_failed");
         }
         break;
       case "response.output_audio_transcript.done":
