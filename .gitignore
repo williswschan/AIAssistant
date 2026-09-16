@@ -1,6 +1,7 @@
 .env
 **/.env
 MISC/
+misc/
 .venv/
 venv/
 __pycache__/
@@ -10,4 +11,5 @@ __pycache__/
 .DS_Store
 certs/
 logs/transcripts/*.txt
+logs/tickets/*.csv
 logs/client-events.log

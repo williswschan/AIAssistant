@@ -9,11 +9,13 @@ Permanent AZURE_OPENAI_API_KEY never leaves the server.
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -88,11 +90,23 @@ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT = os.getenv(
 PROMPT_PATH = BASE_DIR / "techcafe_prompt.txt"
 LOGS_DIR = BASE_DIR / "logs"
 TRANSCRIPTS_DIR = LOGS_DIR / "transcripts"
+TICKETS_DIR = LOGS_DIR / "tickets"
 CLIENT_EVENTS_PATH = LOGS_DIR / "client-events.log"
 _TRANSCRIPT_LOCK = threading.Lock()
 _CLIENT_EVENT_LOCK = threading.Lock()
+_TICKET_LOCK = threading.Lock()
+_CALL_SESSIONS: dict[str, dict] = {}
 _EXPERT_JOBS: dict[str, dict] = {}
 _EXPERT_JOBS_LOCK = threading.Lock()
+TICKET_CSV_FIELDS = [
+    "caller_name",
+    "ticket_creation_time",
+    "started_at",
+    "ended_at",
+    "problem_summary",
+    "solution_summary",
+    "resolved",
+]
 
 
 def _append_client_event(event: str, detail: str = "") -> None:
@@ -206,7 +220,12 @@ END_CALL_TOOL = {
         "Do not call after only 'I'll book that' or 'let me set that up'. "
         "Use when the conversation is finished (resolved, caller done, "
         "or simulated booking/ticket closed). Speak farewell first, then call "
-        "end_call."
+        "end_call. Always include call-outcome fields for the ticket CSV: "
+        "caller_name, problem_summary, solution_summary, and resolved. "
+        "Set resolved=false whenever the outcome is escalation "
+        "(simulated ServiceNow ticket, Tech Cafe session/booking, or any "
+        "handoff the caller still needs). Set resolved=true only when the "
+        "issue was fixed on this call."
     ),
     "parameters": {
         "type": "object",
@@ -215,11 +234,42 @@ END_CALL_TOOL = {
                 "type": "string",
                 "description": (
                     "Short reason, e.g. resolved, caller_done, goodbye, "
-                    "simulated_booking_complete."
+                    "simulated_booking_complete, escalated_servicenow, "
+                    "escalated_techcafe."
+                ),
+            },
+            "caller_name": {
+                "type": "string",
+                "description": "Caller's confirmed name, or unknown if never collected.",
+            },
+            "problem_summary": {
+                "type": "string",
+                "description": "Short summary of the reported IT problem.",
+            },
+            "solution_summary": {
+                "type": "string",
+                "description": (
+                    "What fixed the issue, OR the alternative provided "
+                    "(e.g. simulated ServiceNow ticket, Tech Cafe session booking). "
+                    "Always fill this even when resolved=false."
+                ),
+            },
+            "resolved": {
+                "type": "boolean",
+                "description": (
+                    "true only if the issue was solved on this call. "
+                    "false if escalated to ServiceNow, Tech Cafe session, "
+                    "or any other follow-up the caller still needs."
                 ),
             },
         },
-        "required": ["reason"],
+        "required": [
+            "reason",
+            "caller_name",
+            "problem_summary",
+            "solution_summary",
+            "resolved",
+        ],
         "additionalProperties": False,
     },
 }
@@ -293,6 +343,265 @@ def build_session_config(instructions: str) -> dict:
 
 def ensure_transcript_dirs() -> None:
     TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_ticket_dirs() -> None:
+    TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _new_call_id() -> str:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"call-{stamp}-{os.urandom(2).hex()}"
+
+
+def register_call_session(call_id: str | None = None) -> str:
+    """Track server-side started_at for the upcoming call ticket CSV."""
+    ensure_ticket_dirs()
+    session_id = (call_id or "").strip() or _new_call_id()
+    started = datetime.now().isoformat(timespec="seconds")
+    with _TICKET_LOCK:
+        _CALL_SESSIONS[session_id] = {
+            "started_at": started,
+            "caller_name": "",
+            "problem_summary": "",
+            "solution_summary": "",
+            "resolved": None,
+            "ticket_file": None,
+            "written": False,
+        }
+    logger.info("Call session registered call_id=%s started_at=%s", session_id, started)
+    return session_id
+
+
+def _coerce_resolved(value: object) -> str:
+    """Normalize resolved to CSV True/False; blank if unknown."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y"):
+        return "True"
+    if text in ("false", "0", "no", "n"):
+        return "False"
+    return ""
+
+
+def infer_ticket_fields_from_transcript(transcript_id: str) -> dict:
+    """
+    Best-effort fill when the model only put a narrative in end_call.reason.
+    Reads consult tool args + end_call reason + booking/escalation cues.
+    """
+    inferred: dict = {}
+    try:
+        path = transcript_path_for_id(transcript_id)
+    except ValueError:
+        return inferred
+    if not path.exists():
+        return inferred
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not read transcript for ticket backfill: %s", exc)
+        return inferred
+
+    for match in re.finditer(
+        r"TOOL \(consult_helpdesk_expert\):\s*(\{.*\})",
+        text,
+    ):
+        try:
+            data = json.loads(match.group(1))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if _as_text(data.get("caller_name")):
+            inferred["caller_name"] = _as_text(data.get("caller_name"))
+        if _as_text(data.get("issue_summary")):
+            inferred["problem_summary"] = _as_text(data.get("issue_summary"))
+
+    end_reasons: list[str] = []
+    for match in re.finditer(r"TOOL \(end_call\):\s*(.+)", text):
+        raw = match.group(1).strip()
+        if not raw:
+            continue
+        if raw.startswith("{"):
+            try:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    if _as_text(data.get("caller_name")):
+                        inferred["caller_name"] = _as_text(data.get("caller_name"))
+                    if _as_text(data.get("problem_summary")):
+                        inferred["problem_summary"] = _as_text(
+                            data.get("problem_summary")
+                        )
+                    if _as_text(data.get("solution_summary")):
+                        inferred["solution_summary"] = _as_text(
+                            data.get("solution_summary")
+                        )
+                    if "resolved" in data and data.get("resolved") is not None:
+                        inferred["resolved"] = data.get("resolved")
+                    if _as_text(data.get("reason")):
+                        end_reasons.append(_as_text(data.get("reason")))
+                    continue
+            except Exception:
+                pass
+        end_reasons.append(raw)
+
+    if end_reasons and not inferred.get("solution_summary"):
+        inferred["solution_summary"] = end_reasons[-1]
+
+    lowered = text.lower()
+    escalated = (
+        "servicenow" in lowered
+        or "tech cafe booking" in lowered
+        or "tech cafe session" in lowered
+        or "simulated tech cafe" in lowered
+        or "not resolved" in lowered
+        or "escalat" in lowered
+    )
+    if inferred.get("resolved") is None and escalated:
+        inferred["resolved"] = False
+    return inferred
+
+
+def update_call_ticket_fields(call_id: str, payload: dict) -> dict:
+    """Merge agent-provided outcome fields into the in-memory call session."""
+    session_id = (call_id or "").strip()
+    if not session_id:
+        raise ValueError("call_id is required")
+    with _TICKET_LOCK:
+        session = _CALL_SESSIONS.get(session_id)
+        if session is None:
+            session = {
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "caller_name": "",
+                "problem_summary": "",
+                "solution_summary": "",
+                "resolved": None,
+                "ticket_file": None,
+                "written": False,
+            }
+            _CALL_SESSIONS[session_id] = session
+        if "caller_name" in payload and _as_text(payload.get("caller_name")):
+            session["caller_name"] = _as_text(payload.get("caller_name"))
+        if "problem_summary" in payload and _as_text(payload.get("problem_summary")):
+            session["problem_summary"] = _as_text(payload.get("problem_summary"))
+        if "solution_summary" in payload and _as_text(payload.get("solution_summary")):
+            session["solution_summary"] = _as_text(payload.get("solution_summary"))
+        if "resolved" in payload and payload.get("resolved") is not None:
+            session["resolved"] = payload.get("resolved")
+        return dict(session)
+
+
+def write_call_ticket_csv(call_id: str, payload: dict | None = None) -> dict:
+    """
+    Write one timestamped ticket CSV under logs/tickets/.
+    Idempotent per call_id when content is already present; empty tickets can be rewritten.
+    Server fills ticket_creation_time, started_at, and ended_at.
+    """
+    ensure_ticket_dirs()
+    session_id = (call_id or "").strip()
+    if not session_id:
+        raise ValueError("call_id is required")
+    if payload:
+        update_call_ticket_fields(session_id, payload)
+
+    # Backfill from transcript when the model omitted structured end_call fields.
+    try:
+        inferred = infer_ticket_fields_from_transcript(session_id)
+        if inferred:
+            update_call_ticket_fields(session_id, inferred)
+    except Exception as exc:
+        logger.warning("Ticket transcript backfill skipped: %s", exc)
+
+    with _TICKET_LOCK:
+        session = _CALL_SESSIONS.get(session_id)
+        if session is None:
+            session = {
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "caller_name": "",
+                "problem_summary": "",
+                "solution_summary": "",
+                "resolved": None,
+                "ticket_file": None,
+                "written": False,
+            }
+            _CALL_SESSIONS[session_id] = session
+
+        has_content = bool(
+            session.get("caller_name")
+            or session.get("problem_summary")
+            or session.get("solution_summary")
+            or session.get("resolved") is not None
+        )
+        if session.get("written") and session.get("ticket_file"):
+            existing_path = TICKETS_DIR / str(session["ticket_file"])
+            file_has_content = False
+            if existing_path.exists():
+                try:
+                    with existing_path.open("r", encoding="utf-8", newline="") as handle:
+                        rows = list(csv.DictReader(handle))
+                    if rows:
+                        row0 = rows[0]
+                        file_has_content = bool(
+                            (row0.get("caller_name") or "").strip()
+                            or (row0.get("problem_summary") or "").strip()
+                            or (row0.get("solution_summary") or "").strip()
+                            or (row0.get("resolved") or "").strip()
+                        )
+                except Exception:
+                    file_has_content = False
+            if file_has_content:
+                return {
+                    "ok": True,
+                    "call_id": session_id,
+                    "ticket_file": session["ticket_file"],
+                    "already_written": True,
+                }
+            # Empty prior CSV: fall through and rewrite when we now have fields.
+            if not has_content:
+                return {
+                    "ok": True,
+                    "call_id": session_id,
+                    "ticket_file": session["ticket_file"],
+                    "already_written": True,
+                }
+
+        ended_at = datetime.now().isoformat(timespec="seconds")
+        created_at = ended_at
+        if session.get("ticket_file"):
+            filename = session["ticket_file"]
+            path = TICKETS_DIR / filename
+        else:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = f"ticket-{stamp}-{os.urandom(2).hex()}.csv"
+            path = TICKETS_DIR / filename
+        row = {
+            "caller_name": session.get("caller_name") or "",
+            "ticket_creation_time": created_at,
+            "started_at": session.get("started_at") or created_at,
+            "ended_at": ended_at,
+            "problem_summary": session.get("problem_summary") or "",
+            "solution_summary": session.get("solution_summary") or "",
+            "resolved": _coerce_resolved(session.get("resolved")),
+        }
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=TICKET_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerow(row)
+        session["written"] = True
+        session["ticket_file"] = filename
+        session["ended_at"] = ended_at
+
+    logger.info("Ticket CSV written file=%s call_id=%s", filename, session_id)
+    return {
+        "ok": True,
+        "call_id": session_id,
+        "ticket_file": filename,
+        "already_written": False,
+        "row": row,
+    }
 
 
 def transcript_path_for_id(transcript_id: str) -> Path:
@@ -723,10 +1032,12 @@ def get_token():
         root = get_azure_resource_root()
         webrtc_url = f"{root}/openai/v1/realtime/calls"
         transcript_id = None
+        call_id = None
         if TRANSCRIPT_LOGGING:
             try:
                 created = create_transcript_file()
                 transcript_id = created["transcript_id"]
+                call_id = register_call_session(transcript_id)
                 append_transcript_line(
                     transcript_id,
                     "SYSTEM",
@@ -735,10 +1046,16 @@ def get_token():
                 )
             except Exception as exc:
                 logger.warning("Could not create transcript for call: %s", exc)
+        if not call_id:
+            try:
+                call_id = register_call_session()
+            except Exception as exc:
+                logger.warning("Could not register call session: %s", exc)
         logger.info(
-            "Ephemeral token issued for browser WebRTC (transcript_logging=%s transcript_id=%s)",
+            "Ephemeral token issued for browser WebRTC (transcript_logging=%s transcript_id=%s call_id=%s)",
             TRANSCRIPT_LOGGING,
             transcript_id,
+            call_id,
         )
         return jsonify(
             {
@@ -749,6 +1066,7 @@ def get_token():
                 "voice": AZURE_OPENAI_VOICE,
                 "transcript_logging": TRANSCRIPT_LOGGING,
                 "transcript_id": transcript_id,
+                "call_id": call_id,
                 "transcription_deployment": AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT or None,
                 "realtime_truncation_retention_ratio": REALTIME_TRUNCATION_RETENTION_RATIO,
                 "turn_detection": {
@@ -794,14 +1112,17 @@ def get_token():
 def transcript_start():
     """Create a timestamped transcript file for the current call (if enabled)."""
     if not TRANSCRIPT_LOGGING:
-        return jsonify({"ok": True, "enabled": False})
+        call_id = register_call_session()
+        return jsonify({"ok": True, "enabled": False, "call_id": call_id})
     try:
         created = create_transcript_file()
+        call_id = register_call_session(created["transcript_id"])
         return jsonify(
             {
                 "ok": True,
                 "enabled": True,
                 "transcript_id": created["transcript_id"],
+                "call_id": call_id,
             }
         )
     except Exception as exc:
@@ -1019,20 +1340,61 @@ def ws_control(ws):
 
 @app.post("/api/transcript/end")
 def transcript_end():
-    """Close a transcript file with an ended timestamp."""
-    if not TRANSCRIPT_LOGGING:
-        return jsonify({"ok": True, "enabled": False})
+    """Close a transcript file with an ended timestamp; also finalize ticket CSV."""
     payload = request.get_json(silent=True) or {}
     transcript_id = (payload.get("transcript_id") or "").strip()
+    call_id = (payload.get("call_id") or transcript_id or "").strip()
+    ticket_result = None
+    if call_id:
+        try:
+            ticket_result = write_call_ticket_csv(call_id, payload if isinstance(payload, dict) else None)
+        except Exception as exc:
+            logger.warning("Ticket finalize on transcript end failed: %s", exc)
+    if not TRANSCRIPT_LOGGING:
+        return jsonify({"ok": True, "enabled": False, "ticket": ticket_result})
     if not transcript_id:
-        return jsonify({"error": "transcript_id is required."}), 400
+        return jsonify({"error": "transcript_id is required.", "ticket": ticket_result}), 400
     try:
         close_transcript_file(transcript_id)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "ticket": ticket_result})
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.exception("Transcript end failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/ticket")
+def ticket_upsert():
+    """
+    Store or finalize a per-call ticket CSV.
+    Pass finalize=true (or omit fields-only update) to write logs/tickets/ticket-*.csv.
+    Server fills ticket_creation_time, started_at, and ended_at.
+    """
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "JSON object required."}), 400
+    call_id = _as_text(payload.get("call_id") or payload.get("transcript_id"))
+    if not call_id:
+        return jsonify({"error": "call_id is required."}), 400
+    try:
+        finalize = payload.get("finalize")
+        if finalize is None:
+            # Default: write CSV when outcome fields are present.
+            finalize = any(
+                key in payload
+                for key in ("caller_name", "problem_summary", "solution_summary", "resolved")
+            )
+        if finalize:
+            result = write_call_ticket_csv(call_id, payload)
+        else:
+            session = update_call_ticket_fields(call_id, payload)
+            result = {"ok": True, "call_id": call_id, "session": session, "written": False}
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Ticket upsert failed")
         return jsonify({"error": str(exc)}), 500
 
 

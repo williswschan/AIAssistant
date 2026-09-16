@@ -117,6 +117,14 @@
   const DIAGNOSE_AUTO_KILL_MS = 1200;
   let transcriptLoggingEnabled = false;
   let transcriptId = null;
+  let sessionCallId = null;
+  let pendingTicketFields = null;
+  let ticketDraft = {
+    caller_name: "",
+    problem_summary: "",
+    solution_summary: "",
+    resolved: null,
+  };
   let transcriptionDeployment = null;
   let turnDetectionConfig = {
     type: "server_vad",
@@ -870,6 +878,16 @@
     // Prefer server-created transcript id from /token (reliable even if a
     // separate start request never fires on some mobile browsers).
     transcriptId = tokenData.transcript_id ? String(tokenData.transcript_id) : null;
+    sessionCallId = tokenData.call_id
+      ? String(tokenData.call_id)
+      : transcriptId;
+    pendingTicketFields = null;
+    ticketDraft = {
+      caller_name: "",
+      problem_summary: "",
+      solution_summary: "",
+      resolved: null,
+    };
     transcriptLoggingEnabled = !!transcriptId;
     transcriptionDeployment = tokenData.transcription_deployment
       ? String(tokenData.transcription_deployment)
@@ -1131,13 +1149,40 @@
                 type: "function",
                 name: "end_call",
                 description:
-              "Hang up only after speaking a full polite goodbye that includes Goodbye, さようなら, 再见, or 再見. Never end silently.",
+                  "Hang up only after speaking a full polite goodbye that includes Goodbye, さようなら, 再见, or 再見. " +
+                  "Never end silently. Always include call outcome fields for the ticket CSV: " +
+                  "caller_name, problem_summary, solution_summary, resolved. " +
+                  "resolved=false for ServiceNow / Tech Cafe escalation; true only if fixed on this call.",
                 parameters: {
                   type: "object",
                   properties: {
                     reason: { type: "string" },
+                    caller_name: {
+                      type: "string",
+                      description: "Confirmed caller name, or unknown.",
+                    },
+                    problem_summary: {
+                      type: "string",
+                      description: "Short summary of the reported IT problem.",
+                    },
+                    solution_summary: {
+                      type: "string",
+                      description:
+                        "Fix applied, or alternative provided (ServiceNow / Tech Cafe session, etc).",
+                    },
+                    resolved: {
+                      type: "boolean",
+                      description:
+                        "true only if solved on this call; false if escalated (ServiceNow / Tech Cafe).",
+                    },
                   },
-                  required: ["reason"],
+                  required: [
+                    "reason",
+                    "caller_name",
+                    "problem_summary",
+                    "solution_summary",
+                    "resolved",
+                  ],
                 },
               },
             ],
@@ -2335,17 +2380,26 @@
 
     if (name === "end_call") {
       let reason = "done";
+      let parsed = null;
       try {
-        const parsed = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs;
+        parsed = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs;
         if (parsed && parsed.reason) {
           reason = String(parsed.reason);
         }
       } catch (_error) {
-        // keep default
+        parsed = null;
       }
-      console.log("[INFO] end_call", reason, "aiSpeaking=", aiSpeaking);
+      const ticketFields = buildTicketFieldsFromEndCall(parsed, reason);
+      mergeTicketDraft(ticketFields);
+      pendingTicketFields = ticketFields;
+      console.log("[INFO] end_call", reason, "aiSpeaking=", aiSpeaking, "ticket=", ticketFields);
       pushDebug("tool:end_call");
-      appendTranscript("TOOL", reason, "end_call");
+      appendTranscript(
+        "TOOL",
+        JSON.stringify({ reason, ...ticketFields }),
+        "end_call"
+      );
+      submitCallTicket(ticketFields, true);
       await sendToolOutput(callId, { ok: true, action: "wait_for_goodbye_then_hangup" }, false);
       scheduleHangup(reason);
       return;
@@ -2367,6 +2421,11 @@
     } catch (_error) {
       args = { issue_summary: String(rawArgs) };
     }
+
+    mergeTicketDraft({
+      caller_name: args && args.caller_name,
+      problem_summary: args && args.issue_summary,
+    });
 
     diagnoseHoldLanguage = (args && args.caller_language) || "English";
     // Start hold prompts only after the short expert-start request succeeds,
@@ -3075,6 +3134,12 @@
   function updateBookingOfferStageFromTranscript(text) {
     if (looksLikeBookingConfirmed(text)) {
       bookingOfferStage = "booked";
+      mergeTicketDraft({
+        solution_summary:
+          ticketDraft.solution_summary ||
+          "Simulated Tech Cafe session booked (escalation; not resolved on call).",
+        resolved: false,
+      });
       return;
     }
     if (looksLikeSlotOffer(text)) {
@@ -3083,6 +3148,12 @@
     }
     if (looksLikeTechCafePitch(text)) {
       bookingOfferStage = "techcafe_pitch";
+      mergeTicketDraft({
+        solution_summary:
+          ticketDraft.solution_summary ||
+          "Recommended Tech Cafe session (escalation; not resolved on call).",
+        resolved: false,
+      });
     }
   }
 
@@ -3347,9 +3418,17 @@
       if (data && data.enabled && data.transcript_id) {
         transcriptLoggingEnabled = true;
         transcriptId = data.transcript_id;
+        if (data.call_id) {
+          sessionCallId = String(data.call_id);
+        } else if (!sessionCallId) {
+          sessionCallId = transcriptId;
+        }
         console.log("[INFO] Transcript logging to", transcriptId);
         pushDebug("transcript:" + transcriptId);
       } else if (data && data.enabled === false) {
+        if (data.call_id && !sessionCallId) {
+          sessionCallId = String(data.call_id);
+        }
         console.log("[INFO] Transcript logging disabled by server");
         pushDebug("transcript:off");
       } else {
@@ -3368,16 +3447,149 @@
     }
   }
 
-  function endTranscriptSession() {
-    if (!transcriptId) {
+  function mergeTicketDraft(partial) {
+    if (!partial || typeof partial !== "object") {
       return;
     }
+    if (partial.caller_name) {
+      ticketDraft.caller_name = String(partial.caller_name).trim();
+    }
+    if (partial.problem_summary) {
+      ticketDraft.problem_summary = String(partial.problem_summary).trim();
+    }
+    if (partial.solution_summary) {
+      ticketDraft.solution_summary = String(partial.solution_summary).trim();
+    }
+    if (partial.resolved === true || partial.resolved === false) {
+      ticketDraft.resolved = partial.resolved;
+    } else if (typeof partial.resolved === "string") {
+      const lowered = partial.resolved.trim().toLowerCase();
+      if (lowered === "true" || lowered === "false") {
+        ticketDraft.resolved = lowered === "true";
+      }
+    }
+  }
+
+  function buildTicketFieldsFromEndCall(parsed, reason) {
+    const fields = {
+      caller_name: ticketDraft.caller_name || "",
+      problem_summary: ticketDraft.problem_summary || "",
+      solution_summary: ticketDraft.solution_summary || "",
+      resolved: ticketDraft.resolved,
+    };
+    if (parsed && typeof parsed === "object") {
+      if (parsed.caller_name) {
+        fields.caller_name = String(parsed.caller_name).trim();
+      }
+      if (parsed.problem_summary) {
+        fields.problem_summary = String(parsed.problem_summary).trim();
+      }
+      if (parsed.solution_summary) {
+        fields.solution_summary = String(parsed.solution_summary).trim();
+      }
+      if (parsed.resolved === true || parsed.resolved === false) {
+        fields.resolved = parsed.resolved;
+      } else if (typeof parsed.resolved === "string") {
+        const lowered = parsed.resolved.trim().toLowerCase();
+        if (lowered === "true" || lowered === "false") {
+          fields.resolved = lowered === "true";
+        }
+      }
+    }
+    // Model often dumps the whole close into reason and skips structured fields.
+    if (!fields.solution_summary && reason && reason !== "done") {
+      fields.solution_summary = String(reason).trim();
+    }
+    const blob = (
+      (fields.solution_summary || "") +
+      " " +
+      (reason || "") +
+      " " +
+      (fields.problem_summary || "")
+    ).toLowerCase();
+    if (fields.resolved == null) {
+      if (
+        blob.includes("servicenow") ||
+        blob.includes("tech cafe") ||
+        blob.includes("escalat") ||
+        blob.includes("not resolved") ||
+        blob.includes("booking")
+      ) {
+        fields.resolved = false;
+      } else if (
+        blob.includes("resolved") ||
+        blob.includes("fixed") ||
+        blob.includes("working again")
+      ) {
+        fields.resolved = true;
+      }
+    }
+    return fields;
+  }
+
+  function submitCallTicket(fields, finalize) {
+    const id = sessionCallId || transcriptId;
+    if (!id) {
+      return;
+    }
+    const body = {
+      call_id: id,
+      transcript_id: transcriptId || id,
+      finalize: !!finalize,
+      ...(fields || {}),
+    };
+    fetch("/api/ticket", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      keepalive: true,
+    })
+      .then((response) => response.json().catch(() => ({})))
+      .then((data) => {
+        if (data && data.ticket_file) {
+          console.log("[INFO] Ticket CSV", data.ticket_file);
+          pushDebug("ticket:" + data.ticket_file);
+        }
+      })
+      .catch((error) => {
+        console.warn("[WARN] ticket submit failed", error);
+      });
+  }
+
+  function endTranscriptSession() {
     const id = transcriptId;
+    const sid = sessionCallId || transcriptId;
+    const ticketPayload = pendingTicketFields || {};
     transcriptId = null;
+    sessionCallId = null;
+    pendingTicketFields = null;
+    if (sid) {
+      // Always finalize a ticket CSV when the call ends (server fills times).
+      fetch("/api/ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          call_id: sid,
+          transcript_id: id || sid,
+          finalize: true,
+          ...ticketPayload,
+        }),
+        keepalive: true,
+      }).catch((error) => {
+        console.warn("[WARN] ticket finalize failed", error);
+      });
+    }
+    if (!id) {
+      return;
+    }
     fetch("/api/transcript/end", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transcript_id: id }),
+      body: JSON.stringify({
+        transcript_id: id,
+        call_id: sid || id,
+        ...ticketPayload,
+      }),
       keepalive: true,
     }).catch((error) => {
       console.warn("[WARN] transcript end failed", error);
