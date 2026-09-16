@@ -932,6 +932,14 @@
       const stream = event.streams[0] || new MediaStream([event.track]);
       attachRemoteAudioStream(stream);
       window.setTimeout(() => {
+        // During greeting mic-hold the meter is ~0% on purpose — do not treat
+        // that as a dead mic or we thrash getUserMedia and stall WebRTC/Hello.
+        if (greetingMicHeld || !callAudioReady) {
+          ensureLiveMicOnSender("after_remote_audio_greeting").catch((error) => {
+            console.warn("[WARN] mic ensure after remote audio failed", error);
+          });
+          return;
+        }
         const track = localStream && localStream.getAudioTracks()[0];
         if (!track || track.readyState !== "live" || lastMicPct < 2) {
           recoverMicrophone("after_remote_audio").catch((error) => {
@@ -3606,6 +3614,18 @@
     if (micRecovering || isEnding || !peerConnection) {
       return;
     }
+    // Greeting intentionally disables the local track (silent uplink / 0% meter).
+    // Recovering then causes dead_uplink loops and can block ICE + Hello audio.
+    const duringGreeting = greetingMicHeld || !callAudioReady;
+    if (
+      duringGreeting &&
+      reason !== "track_ended" &&
+      reason !== "dead_track"
+    ) {
+      console.log("[INFO] Skip mic recover during greeting hold:", reason);
+      pushDebug("mic:skip_recover:" + reason);
+      return;
+    }
     micRecovering = true;
     try {
       console.log("[INFO] Recovering default microphone:", reason);
@@ -3715,7 +3735,10 @@
             (silentMic ? " SILENT-MIC" : "")
         );
 
-        if (trackDead || (silentMic && delta === 0)) {
+        // Ignore intentional silence while greeting mic is held / call not ready.
+        if (greetingMicHeld || !callAudioReady) {
+          zeroUplinkSeconds = 0;
+        } else if (trackDead || (silentMic && delta === 0)) {
           zeroUplinkSeconds += 1;
         } else {
           zeroUplinkSeconds = 0;

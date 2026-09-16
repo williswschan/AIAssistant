@@ -3,6 +3,9 @@
 ## Purpose
 Standalone POC for ??Talk to Tech Cafe AI?? browser voice Help Desk using realtime speech-to-speech (S2S), later intended to sit beside the existing Tech Cafe Portal appointment flow.
 
+## Git remote
+- Canonical repo: https://github.com/williswschan/AIAssistant.git (`origin` / `main`). VM working copy: `/opt/techcafe`.
+
 ## Key architectural decisions
 - Transport: browser WebRTC to Azure OpenAI Realtime.
 - Provider: **Azure OpenAI / Microsoft Foundry** (`foundry-techcafeaiassistant`, project `proj-techcafeaiassistant`) ??not OpenAI Platform and not chatgpt.com Advanced Voice.
@@ -57,3 +60,4 @@ Standalone POC for ??Talk to Tech Cafe AI?? browser voice Help Desk using realti
 - One-reply-per-user-turn guard: Realtime sometimes emitted a short stall line then a second full reply with no caller speech (`call-20260912-205224-3fa7`); client cancels extras (`suppress_double_reply`); prompt forbids split stall+follow-up.
 - Language: match the caller's **latest spoken CONTENT** language/dialect (English / Japanese / Mandarin / Cantonese). Detect from sentence grammar/particles ? **ignore English or romanized names** (Willis Chan + Mandarin issue => Mandarin). Do not lock English from greeting/name; IT brand words inside Chinese/Japanese do not count as English. HK bias: do not default all Chinese to Cantonese.
 - Barge-in accept UX: if caller interrupts a Tech Cafe/booking offer with yes/okay (`call-20260913-114515-c241`, `call-20260913-120311-cffc`), advance to offer/confirm the simulated slot ??do not restate the same recommendation. Client coaches this on speech_stopped when `bookingOfferStage` is techcafe_pitch/slot_offer (kills auto-reply, one pinned voice reply).
+- **Ring-but-no-Hello (2026-09-16):** Greeting holds mic (`track.enabled=false`) so Azure cannot barge into Hello. Outbound stats treated silent+0-byte uplink as `dead_uplink` and `after_remote_audio` recovered when meter &lt;2% — false positives that looped `getUserMedia`/`replaceTrack` while ICE was still `connecting` (console: `call-20260916-004506-227e`). Fix: skip mic recover for non-dead-track reasons while `greetingMicHeld || !callAudioReady`; do not count intentional silence toward dead_uplink; after remote audio during greeting only `ensureLiveMicOnSender`.
