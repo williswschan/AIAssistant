@@ -1659,14 +1659,12 @@ if __name__ == "__main__":
     host = os.getenv("FLASK_HOST", "0.0.0.0")
     port = int(os.getenv("FLASK_PORT", "5000"))
     use_ssl = os.getenv("FLASK_SSL", "true").strip().lower() in ("1", "true", "yes", "on")
-    ssl_context = None
-    scheme = "http"
+    scheme = "https" if use_ssl else "http"
     if use_ssl:
-        ssl_context = ensure_dev_ssl_certs()
-        scheme = "https"
+        ensure_dev_ssl_certs()
 
     logger.info(
-        "Starting Tech Cafe AI Helpdesk on %s://%s:%s (realtime=%s chat=%s)",
+        "Starting Tech Cafe AI Helpdesk via gunicorn (%s://%s:%s realtime=%s chat=%s)",
         scheme,
         host,
         port,
@@ -1679,20 +1677,13 @@ if __name__ == "__main__":
             port,
         )
 
-    # Flask debug reloader runs this file twice; warm only once in the serving process.
-    debug = os.getenv("FLASK_DEBUG", "false").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    # Prefer gunicorn+gevent over Werkzeug; Flask's built-in server can wedge on
+    # CLOSE-WAIT / long-lived WebSockets under public scan + call load.
+    gunicorn_bin = str(BASE_DIR / ".venv" / "bin" / "gunicorn")
+    if not Path(gunicorn_bin).exists():
+        gunicorn_bin = "gunicorn"
+    conf = str(BASE_DIR / "gunicorn.conf.py")
+    os.execvp(
+        gunicorn_bin,
+        [gunicorn_bin, "-c", conf, "wsgi:app"],
     )
-    if PROMPT_CACHE_WARMUP and (
-        (not debug) or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
-    ):
-        threading.Thread(
-            target=warm_diagnose_prompt_cache,
-            name="prompt-cache-warmup",
-            daemon=True,
-        ).start()
-
-    app.run(host=host, port=port, debug=debug, threaded=True, ssl_context=ssl_context)
