@@ -170,7 +170,10 @@ DIAGNOSE_TOOL = {
         "properties": {
             "caller_name": {
                 "type": "string",
-                "description": "Confirmed caller name, if known.",
+                "description": (
+                    "Confirmed caller name using the latest spelling/correction if known. "
+                    "Letter-by-letter spelling overrides an earlier phonetic guess."
+                ),
             },
             "issue_summary": {
                 "type": "string",
@@ -240,7 +243,12 @@ END_CALL_TOOL = {
             },
             "caller_name": {
                 "type": "string",
-                "description": "Caller's confirmed name, or unknown if never collected.",
+                "description": (
+                    "Caller's confirmed name using the latest spelling/correction, "
+                    "or unknown if never collected. If the caller spelled letters "
+                    "(e.g. C-A-L-V-I-N), rebuild from those letters (Calvin) — do not "
+                    "keep an earlier misheard form (Kelvin)."
+                ),
             },
             "problem_summary": {
                 "type": "string",

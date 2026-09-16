@@ -125,6 +125,8 @@
     solution_summary: "",
     resolved: null,
   };
+  // Letter-by-letter spelling heard in assistant speech (authoritative over mishears).
+  let spelledCallerName = "";
   let transcriptionDeployment = null;
   let turnDetectionConfig = {
     type: "server_vad",
@@ -888,6 +890,7 @@
       solution_summary: "",
       resolved: null,
     };
+    spelledCallerName = "";
     transcriptLoggingEnabled = !!transcriptId;
     transcriptionDeployment = tokenData.transcription_deployment
       ? String(tokenData.transcription_deployment)
@@ -1130,7 +1133,11 @@
                 parameters: {
                   type: "object",
                   properties: {
-                    caller_name: { type: "string" },
+                    caller_name: {
+                      type: "string",
+                      description:
+                        "Confirmed caller name using the latest spelling/correction if known.",
+                    },
                     issue_summary: { type: "string" },
                     symptoms: { type: "string" },
                     already_tried: { type: "string" },
@@ -1159,7 +1166,9 @@
                     reason: { type: "string" },
                     caller_name: {
                       type: "string",
-                      description: "Confirmed caller name, or unknown.",
+                      description:
+                        "Confirmed caller name (latest spelling/correction), or unknown. " +
+                        "If they spelled letters (e.g. C-A-L-V-I-N), use that form (Calvin), not an earlier mishear (Kelvin).",
                     },
                     problem_summary: {
                       type: "string",
@@ -1551,6 +1560,7 @@
             }
             lastAssistantTranscript = assistantText;
             updateBookingOfferStageFromTranscript(assistantText);
+            noteSpelledNameFromAssistantSpeech(assistantText);
             appendTranscript("ASSISTANT", assistantText, "speech");
             // Model sometimes speaks goodbye but forgets end_call
             // (call-20260913-132902-a0d2) — hang up from closing farewell speech.
@@ -3447,12 +3457,85 @@
     }
   }
 
+  function noteSpelledNameFromAssistantSpeech(speechText) {
+    if (!speechText) {
+      return;
+    }
+    // Only letter-by-letter: "spelled C A L V I N" / "spelling C-A-L-V-I-N".
+    // Do NOT match phrases like "spelling you provided" (call-20260916-170710-b05f).
+    // Do NOT pull the leading letter of the surname (call-20260916-171047-e98d:
+    // "spelled C A L V I N, Chen" must not become Calvinc).
+    const Match = String(speechText).match(
+      /(?:spell(?:ed|ing)?)\s*(?:as|is|:|,)?\s*([A-Za-z](?:(?:\s*[,\-]+\s*|\s+)[A-Za-z]){1,24})(?![A-Za-z])/i
+    );
+    if (!Match) {
+      return;
+    }
+    const Tokens = Match[1].split(/[\s,\-]+/).filter(Boolean);
+    if (
+      Tokens.length < 2 ||
+      Tokens.length > 24 ||
+      !Tokens.every(function (Token) {
+        return /^[A-Za-z]$/.test(Token);
+      })
+    ) {
+      return;
+    }
+    const Letters = Tokens.join("");
+    const Spelled =
+      Letters.charAt(0).toUpperCase() + Letters.slice(1).toLowerCase();
+    spelledCallerName = Spelled;
+    const Current = (ticketDraft.caller_name || "").trim();
+    if (!Current) {
+      ticketDraft.caller_name = Spelled;
+    } else {
+      const Parts = Current.split(/\s+/);
+      if (Parts[0].toLowerCase() !== Spelled.toLowerCase()) {
+        Parts[0] = Spelled;
+        ticketDraft.caller_name = Parts.join(" ");
+      }
+    }
+    pushDebug("ticket:name_spelling=" + ticketDraft.caller_name);
+    console.log(
+      "[INFO] Name spelling correction from speech:",
+      ticketDraft.caller_name
+    );
+  }
+
+  function resolveCallerNameForTicket(parsedName) {
+    const FromTool = parsedName ? String(parsedName).trim() : "";
+    if (spelledCallerName) {
+      if (FromTool) {
+        const Parts = FromTool.split(/\s+/);
+        if (Parts[0].toLowerCase() !== spelledCallerName.toLowerCase()) {
+          Parts[0] = spelledCallerName;
+          return Parts.join(" ");
+        }
+        return FromTool;
+      }
+      return (ticketDraft.caller_name || spelledCallerName).trim();
+    }
+    return FromTool || (ticketDraft.caller_name || "").trim();
+  }
+
   function mergeTicketDraft(partial) {
     if (!partial || typeof partial !== "object") {
       return;
     }
     if (partial.caller_name) {
-      ticketDraft.caller_name = String(partial.caller_name).trim();
+      const Incoming = String(partial.caller_name).trim();
+      // Prefer letter-spelling correction over a later misheard tool arg.
+      if (spelledCallerName) {
+        const Parts = Incoming.split(/\s+/);
+        if (Parts[0].toLowerCase() !== spelledCallerName.toLowerCase()) {
+          Parts[0] = spelledCallerName;
+          ticketDraft.caller_name = Parts.join(" ");
+        } else {
+          ticketDraft.caller_name = Incoming;
+        }
+      } else {
+        ticketDraft.caller_name = Incoming;
+      }
     }
     if (partial.problem_summary) {
       ticketDraft.problem_summary = String(partial.problem_summary).trim();
@@ -3478,9 +3561,7 @@
       resolved: ticketDraft.resolved,
     };
     if (parsed && typeof parsed === "object") {
-      if (parsed.caller_name) {
-        fields.caller_name = String(parsed.caller_name).trim();
-      }
+      fields.caller_name = resolveCallerNameForTicket(parsed.caller_name);
       if (parsed.problem_summary) {
         fields.problem_summary = String(parsed.problem_summary).trim();
       }
@@ -3495,10 +3576,15 @@
           fields.resolved = lowered === "true";
         }
       }
+    } else if (spelledCallerName) {
+      fields.caller_name = resolveCallerNameForTicket(fields.caller_name);
     }
     // Model often dumps the whole close into reason and skips structured fields.
     if (!fields.solution_summary && reason && reason !== "done") {
       fields.solution_summary = String(reason).trim();
+    }
+    if (!fields.problem_summary && reason) {
+      fields.problem_summary = String(reason);
     }
     const blob = (
       (fields.solution_summary || "") +
@@ -3523,6 +3609,12 @@
       ) {
         fields.resolved = true;
       }
+    }
+    if (fields.resolved !== true && fields.resolved !== false) {
+      fields.resolved = false;
+    }
+    if (!fields.caller_name) {
+      fields.caller_name = "unknown";
     }
     return fields;
   }
